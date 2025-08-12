@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pocket Piano Coach — Solfège</title>
+<style>
+  :root { --pad: 14px; --radius: 16px; --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; }
+  html, body { margin:0; padding:0; font-family: var(--font); background:#fff; color:#111; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: var(--pad); display: flex; flex-direction: column; gap: var(--pad); }
+  h1 { font-size: 22px; margin: 0; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .card { border:1px solid #ddd; border-radius: var(--radius); padding: var(--pad); box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+  .btn { padding:10px 14px; border:1px solid #ccc; border-radius: 999px; background:#fafafa; }
+  .btn:active { transform: translateY(1px); }
+  .seg { display:flex; gap:6px; }
+  .seg button { border:1px solid #ccc; padding:8px 12px; border-radius:999px; background:#fff; }
+  .seg button.on { background:#111; color:#fff; border-color:#111; }
+  .big { font-size: 34px; font-weight: 700; letter-spacing: 0.4px; }
+  .muted { color:#666; font-size: 12px; }
+  .status { font-size: 16px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  input[type="range"] { width:100%; }
+  .toggle { display:flex; align-items:center; gap:8px; }
+  .small { font-size: 12px; color:#555; }
+  svg { width: 100%; height: 80px; }
+  .hl { background: #f3f4f6; border-radius: 10px; padding: 6px 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row">
+    <h1>Pocket Piano Coach — Solfège</h1>
+    <button id="startBtn" class="btn">Start Mic</button>
+  </div>
+
+  <div class="seg">
+    <button id="modeTrainer" class="on">Note Trainer</button>
+    <button id="modeTuner">Tuner</button>
+  </div>
+
+  <div id="trainerCard" class="card">
+    <div class="row">
+      <div>
+        <div class="muted">Target</div>
+        <div id="targetName" class="big">Do</div>
+        <div id="targetInfo" class="small">C4 · 261.6 Hz · treble</div>
+      </div>
+      <div style="text-align:right">
+        <div class="muted">Streak</div>
+        <div id="streak" class="big">0</div>
+      </div>
+    </div>
+    <div id="staff" class="hl"></div>
+    <div id="status" class="status" style="margin-top:8px;">Tap Start Mic</div>
+    <div id="centsInfo" class="small muted"></div>
+  </div>
+
+  <div id="tunerCard" class="card" style="display:none">
+    <div class="muted">Detected</div>
+    <div id="detectedName" class="big">—</div>
+    <div class="small muted">Use this to check any key or your voice pitch.</div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <div class="small muted">Range</div>
+        <div class="small" id="rangeLabel">Do (C3) → Do (C5)</div>
+        <input id="lowRange" type="range" min="36" max="84" step="1" value="52" />
+        <input id="highRange" type="range" min="36" max="84" step="1" value="76" />
+      </div>
+      <div>
+        <div class="small muted">Tolerance (cents)</div>
+        <input id="tol" type="range" min="5" max="60" step="1" value="30" />
+        <div class="small">±<span id="tolVal">30</span>¢</div>
+        <div class="toggle" style="margin-top:8px;">
+          <input id="useSi" type="checkbox" checked />
+          <label for="useSi" class="small">Use “Si” instead of “Ti”</label>
+        </div>
+      </div>
+    </div>
+    <div class="small muted" style="margin-top:8px">Tip: put your phone on the stand, mic toward the keys. On iPhone/Safari, you must press <b>Start Mic</b> to enable audio.</div>
+  </div>
+
+  <div class="card">
+    <b>Sight-reading helper (Do-Re-Mi)</b>
+    <p class="small">
+      Treble clef is usually right hand, bass left. I show the target note on a mini staff and name it with <b>Do-Re-Mi-Fa-Sol-La-Si-Do</b> (fixed Do). Letters (C, D, E…) appear small for reference.
+    </p>
+  </div>
+
+  <div class="small muted">Roadmap: MIDI-in for digital pianos · chord recognition · graded pieces · camera finger checks</div>
+</div>
+
+<script>
+// ===== Music helpers =====
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+function freqToMidi(f){ return Math.round(69 + 12 * Math.log2(f / 440)); }
+function midiToFreq(m){ return 440 * Math.pow(2, (m - 69) / 12); }
+function midiToName(m){ const name = NOTE_NAMES[(m % 12 + 12) % 12]; const octave = Math.floor(m/12)-1; return name + octave; }
+
+function midiToSolfege(m, useSi=true){
+  const pc = (m % 12 + 12) % 12;
+  const mapSi = ["Do","Do#","Re","Re#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
+  const mapTi = ["Do","Do#","Re","Re#","Mi","Fa","Fa#","So","So#","La","La#","Ti"];
+  return (useSi? mapSi : mapTi)[pc];
+}
+
+function centsOff(f, ref){ return 1200 * Math.log2(f / ref); }
+
+function randomTarget(low, high){ return Math.floor(Math.random() * (high - low + 1)) + low; }
+
+// ===== Simple staff drawing (SVG) =====
+function drawStaff(svg, midi, clef){
+  svg.innerHTML = "";
+  const staffWidth = svg.clientWidth || 300;
+  const staffHeight = 80;
+  const leftPad = 24, rightPad = 12;
+  const lines = 5;
+  const spacing = staffHeight / (lines - 1);
+  const NS = "http://www.w3.org/2000/svg";
+  svg.setAttribute("viewBox", `0 0 ${staffWidth} ${staffHeight}`);
+
+  for(let i=0;i<lines;i++){
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", leftPad);
+    line.setAttribute("x2", staffWidth - rightPad);
+    line.setAttribute("y1", i*spacing);
+    line.setAttribute("y2", i*spacing);
+    line.setAttribute("stroke", "#111");
+    line.setAttribute("stroke-width", "1");
+    svg.appendChild(line);
+  }
+
+  const clefText = document.createElementNS(NS, "text");
+  clefText.setAttribute("x", 4);
+  clefText.setAttribute("y", spacing * (clef === "treble" ? 1.2 : 3.8));
+  clefText.setAttribute("font-size", "18");
+  clefText.setAttribute("font-weight", "bold");
+  clefText.textContent = clef === "treble" ? "𝄞" : "𝄢";
+  svg.appendChild(clefText);
+
+  const refMidi = clef === "treble" ? 64 : 43; // E4 or G2 bottom line
+  const diatonicIndex = m => {
+    const n = NOTE_NAMES[(m % 12 + 12) % 12];
+    const base = {C:0,"C#":0,D:1,"D#":1,E:2,F:3,"F#":3,G:4,"G#":4,A:5,"A#":5,B:6}[n];
+    return base;
+  };
+  const stepsBetween = (m1,m2) => {
+    const o1 = Math.floor(m1/12)-1, o2 = Math.floor(m2/12)-1;
+    return (o2-o1)*7 + (diatonicIndex(m2)-diatonicIndex(m1));
+  };
+  const steps = stepsBetween(refMidi, midi);
+  const noteY = (lines - 1) * spacing - (steps * (spacing / 2));
+
+  const note = document.createElementNS(NS, "ellipse");
+  note.setAttribute("cx", 130);
+  note.setAttribute("cy", noteY);
+  note.setAttribute("rx", 8);
+  note.setAttribute("ry", 6);
+  note.setAttribute("fill", "#111");
+  svg.appendChild(note);
+
+  const stem = document.createElementNS(NS, "line");
+  if (noteY > spacing*2.5) {
+    stem.setAttribute("x1", 138); stem.setAttribute("x2", 138);
+    stem.setAttribute("y1", noteY); stem.setAttribute("y2", noteY - spacing*3);
+  } else {
+    stem.setAttribute("x1", 122); stem.setAttribute("x2", 122);
+    stem.setAttribute("y1", noteY); stem.setAttribute("y2", noteY + spacing*3);
+  }
+  stem.setAttribute("stroke", "#111"); stem.setAttribute("stroke-width", "1.5");
+  svg.appendChild(stem);
+}
+
+// ===== Audio + detection =====
+let ctx = null, analyser = null, stream = null, raf = null, buf = null;
+let listening = false;
+let mode = "trainer";
+let useSi = true;
+let lowMidi = 52, highMidi = 76; // E3–E5
+let threshold = 30;
+let targetMidi = 60; // C4
+let clef = "treble";
+let streak = 0;
+let okSince = 0;
+let lastDetected = { freq: null, midi: null };
+
+const els = {
+  startBtn: document.getElementById("startBtn"),
+  modeTrainer: document.getElementById("modeTrainer"),
+  modeTuner: document.getElementById("modeTuner"),
+  trainerCard: document.getElementById("trainerCard"),
+  tunerCard: document.getElementById("tunerCard"),
+  targetName: document.getElementById("targetName"),
+  targetInfo: document.getElementById("targetInfo"),
+  streak: document.getElementById("streak"),
+  staff: document.getElementById("staff"),
+  status: document.getElementById("status"),
+  centsInfo: document.getElementById("centsInfo"),
+  detectedName: document.getElementById("detectedName"),
+  lowRange: document.getElementById("lowRange"),
+  highRange: document.getElementById("highRange"),
+  rangeLabel: document.getElementById("rangeLabel"),
+  tol: document.getElementById("tol"),
+  tolVal: document.getElementById("tolVal"),
+  useSi: document.getElementById("useSi"),
+};
+
+function setMode(next){
+  mode = next;
+  els.modeTrainer.classList.toggle("on", mode==="trainer");
+  els.modeTuner.classList.toggle("on", mode==="tuner");
+  els.trainerCard.style.display = mode==="trainer" ? "block" : "none";
+  els.tunerCard.style.display = mode==="tuner" ? "block" : "none";
+  updateUI();
+}
+
+function chooseTarget(){
+  targetMidi = randomTarget(lowMidi, highMidi);
+  clef = targetMidi < 60 ? "bass" : "treble";
+  updateUI();
+}
+
+function updateRangeLabel(){
+  els.rangeLabel.textContent = `${midiToSolfege(lowMidi, useSi)} (${midiToName(lowMidi)}) → ${midiToSolfege(highMidi, useSi)} (${midiToName(highMidi)})`;
+}
+
+function updateUI(){
+  els.targetName.textContent = midiToSolfege(targetMidi, useSi);
+  els.targetInfo.textContent = `${midiToName(targetMidi)} · ${midiToFreq(targetMidi).toFixed(1)} Hz · ${clef}`;
+  els.streak.textContent = String(streak);
+  let svg = els.staff.querySelector("svg");
+  if (!svg){ svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); els.staff.innerHTML = ""; els.staff.appendChild(svg); }
+  drawStaff(svg, targetMidi, clef);
+  if (lastDetected.freq){
+    els.detectedName.textContent = `${midiToSolfege(lastDetected.midi, useSi)} · ${lastDetected.freq.toFixed(1)} Hz (${midiToName(lastDetected.midi)})`;
+  } else {
+    els.detectedName.textContent = "—";
+  }
+  updateRangeLabel();
+  els.tolVal.textContent = String(threshold);
+}
+
+async function start(){
+  if (listening) return;
+  listening = true;
+  els.status.textContent = "Listening…";
+  els.startBtn.textContent = "Stop";
+  try{
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+    const source = ctx.createMediaStreamSource(stream);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.85;
+    source.connect(analyser);
+    buf = new Float32Array(analyser.fftSize);
+    loop();
+  }catch(err){
+    listening = false;
+    els.status.textContent = "Mic error: " + err.message;
+    els.startBtn.textContent = "Start Mic";
+  }
+}
+
+function stop(){
+  listening = false;
+  if (raf) cancelAnimationFrame(raf);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (ctx){ ctx.close(); }
+  ctx = analyser = stream = raf = null;
+  els.startBtn.textContent = "Start Mic";
+  els.status.textContent = "Stopped.";
+}
+
+function detectPitch(buffer, sampleRate){
+  const SIZE = buffer.length;
+  let rms = 0;
+  for (let i=0;i<SIZE;i++) rms += buffer[i]*buffer[i];
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < 0.01) return null;
+  let mean = 0;
+  for (let i=0;i<SIZE;i++) mean += buffer[i];
+  mean /= SIZE;
+  for (let i=0;i<SIZE;i++) buffer[i] -= mean;
+
+  const MAX_PERIOD = Math.floor(sampleRate / 65);
+  const MIN_PERIOD = Math.floor(sampleRate / 1000);
+
+  let bestOffset = -1, bestCorr = 0, prevCorr = 1;
+  for (let offset = MIN_PERIOD; offset < MAX_PERIOD; offset++){
+    let corr = 0;
+    for (let i=0;i<SIZE - offset;i++){
+      corr += buffer[i]*buffer[i+offset];
+    }
+    corr /= SIZE;
+    if (corr > 0.9 && corr > prevCorr && corr > bestCorr){
+      bestCorr = corr;
+      bestOffset = offset;
+    }
+    prevCorr = corr;
+  }
+  if (bestOffset > 0){
+    const freq = sampleRate / bestOffset;
+    if (freq >= 65 && freq <= 1000) return freq;
+  }
+  return null;
+}
+
+function loop(){
+  if (!listening) return;
+  analyser.getFloatTimeDomainData(buf);
+  const freq = detectPitch(buf.slice(), ctx.sampleRate);
+  if (freq){
+    const midi = freqToMidi(freq);
+    lastDetected = { freq, midi };
+    if (mode === "trainer"){
+      const diff = centsOff(freq, midiToFreq(targetMidi));
+      els.centsInfo.textContent = `~${Math.round(centsOff(freq, midiToFreq(midi)))}¢ vs nearest note`;
+      if (Math.abs(diff) <= threshold){
+        els.status.textContent = "✅ Hold it…";
+        if (okSince === 0) okSince = performance.now();
+        if (performance.now() - okSince > 500){
+          streak += 1;
+          okSince = 0;
+          chooseTarget();
+        }
+      } else {
+        okSince = 0;
+        els.status.textContent = diff < 0 ? "⬆️ Raise pitch a bit" : "⬇️ Lower pitch a bit";
+      }
+    } else {
+      els.detectedName.textContent = `${midiToSolfege(midi, useSi)} · ${freq.toFixed(1)} Hz (${midiToName(midi)})`;
+    }
+  } else {
+    lastDetected = { freq: null, midi: null };
+    els.centsInfo.textContent = "";
+    if (mode === "trainer") els.status.textContent = "Listening…";
+    else els.detectedName.textContent = "—";
+  }
+  raf = requestAnimationFrame(loop);
+}
+
+// ===== Events ====
